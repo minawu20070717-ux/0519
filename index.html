@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 手勢辨識互動系統</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+    <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+
+    <style>
+        /* --- 畫面背景與整體改版樣式 --- */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            /* 背景改版：深色科技感漸層 */
+            background: linear-gradient(135deg, #141622 0%, #080a10 100%);
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        /* 頂部遊戲標題 */
+        .header {
+            text-align: center;
+            margin-bottom: 15px;
+            z-index: 10;
+        }
+
+        .header h1 {
+            font-size: 22px;
+            letter-spacing: 2px;
+            background: linear-gradient(45deg, #ff7b00, #ffae00);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            color: transparent;
+        }
+
+        /* 主容器：比照手機比例 (寬400px, 高600px) */
+        #container {
+            position: relative;
+            width: 400px;
+            height: 600px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+            overflow: hidden;
+        }
+
+        /* p5.js Canvas 放置區域 */
+        #canvas-holder {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* HTML UI 疊加層（過關勝場） */
+        .ui-layer {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            z-index: 2;
+            pointer-events: none; /* 讓點擊可以穿透到畫布 */
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }
+
+        /* 右上角勝場計數器 */
+        .score-badge {
+            align-self: flex-end;
+            background: rgba(46, 213, 115, 0.15);
+            border: 1px solid rgba(46, 213, 115, 0.5);
+            color: #2ed573;
+            padding: 6px 14px;
+            border-radius: 50px;
+            font-weight: bold;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            backdrop-filter: blur(5px);
+        }
+
+        /* 底部功能與說明欄 */
+        .footer-info {
+            width: 100%;
+            background: rgba(10, 12, 18, 0.85);
+            backdrop-filter: blur(10px);
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 15px;
+            text-align: center;
+            font-size: 13px;
+            color: #a0a5b5;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            z-index: 3;
+        }
+
+        .footer-info span {
+            margin: 0 8px;
+            color: #fff;
+            font-weight: bold;
+        }
+
+        /* 載入中動畫狀態 */
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ffae00;
+            font-weight: bold;
+            z-index: 4;
+            font-size: 15px;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 20px;
+            border-radius: 50px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>AI GESTURE GAME</h1>
+    </div>
+
+    <div id="container">
+        <div id="loading">AI 模組載入中...</div>
+        
+        <div id="canvas-holder"></div>
+
+        <div class="ui-layer">
+            <div class="score-badge">
+                <span>✓</span> <span id="win-count">0 勝</span>
+            </div>
+        </div>
+
+        <div class="footer-info">
+            ✊ <span>石頭</span> ✋ <span>布</span> ✌ <span>剪刀</span>
+            <div style="margin-top: 5px; font-size: 11px; color: #636e72;">AI 即時手勢辨識模組已啟動</div>
+        </div>
+    </div>
+
+    <script>
+        let video;
+        let handpose;
+        let predictions = [];
+        let isModelLoaded = false;
+        let detectedGesture = "請將手放入畫面..."; // 用於顯示辨識結果
+
+        function setup() {
+            // 建立畫布並固定在 HTML 容器中
+            const canvas = createCanvas(400, 600);
+            canvas.parent('canvas-holder');
+
+            // 設定攝影機參數（優先使用前置鏡頭）
+            let constraints = {
+                video: { facingMode: "user" },
+                audio: false
+            };
+
+            // 啟動攝影機，確保取得授權與畫面後再啟動 AI 模型
+            video = createCapture(constraints, function() {
+                console.log("攝影機啟動成功！");
+                handpose = ml5.handPose(modelReady);
+            });
+            video.size(width, height);
+            video.hide(); 
+            // 針對手機瀏覽器 (尤其是 iOS Safari) 的必要設定，允許內嵌播放
+            video.elt.setAttribute('playsinline', '');
+        }
+
+        function modelReady() {
+            console.log("Handpose Model Ready!");
+            isModelLoaded = true;
+            document.getElementById('loading').style.display = 'none';
+            
+            // 開始連續偵測手勢
+            handpose.detectStart(video, results => {
+                predictions = results;
+            });
+        }
+
+        function draw() {
+            clear();
+
+            // 1. 繪製攝影機畫面（確保攝影機已有畫面才繪製）
+            if (video && video.loadedmetadata) {
+                push();
+                translate(width, 0);
+                scale(-1, 1);
+                image(video, 0, 0, width, height);
+                pop();
+            }
+
+            // 2. 畫面上疊加一層微暗的半透明濾鏡，提升科技感，並讓綠色骨架與文字更清晰
+            background(14, 16, 23, 140); 
+
+            // 3. 繪製手部關鍵點與連線骨架
+            drawHandSkeleton();
+            
+            // 4. 辨識手勢
+            classifyGesture();
+
+            // 5. 繪製 UI 文字
+            drawTextUI();
+        }
+
+        // 繪製精準手部骨架
+        function drawHandSkeleton() {
+            if (predictions.length > 0) {
+                let hand = predictions[0];
+                // ml5.js v1 改用 keypoints，且內部為 {x, y, z} 物件
+                let keypoints = hand.keypoints;
+
+                // 正確的 MediaPipe 手部骨架連線關係
+                let connections = [
+                    [0, 1], [1, 2], [2, 3], [3, 4],       // 大拇指
+                    [0, 5], [5, 6], [6, 7], [7, 8],       // 食指
+                    [5, 9], [9, 10], [10, 11], [11, 12],  // 中指
+                    [9, 13], [13, 14], [14, 15], [15, 16],// 無名指
+                    [13, 17], [17, 18], [18, 19], [19, 20],// 小拇指
+                    [0, 17]                               // 手掌邊緣
+                ];
+
+                // 畫骨架連線
+                stroke(46, 213, 115, 200); // 科技綠 (帶有透明度)
+                strokeWeight(2);
+                noFill();
+
+                for (let i = 0; i < connections.length; i++) {
+                    let [a, b] = connections[i];
+                    let pt1 = keypoints[a];
+                    let pt2 = keypoints[b];
+                    
+                    // 鏡像翻轉 X 坐標
+                    let x1 = width - pt1.x;
+                    let y1 = pt1.y;
+                    let x2 = width - pt2.x;
+                    let y2 = pt2.y;
+                    
+                    line(x1, y1, x2, y2);
+                }
+
+                // 畫特徵點
+                noStroke();
+                fill(46, 213, 115);
+                for (let i = 0; i < keypoints.length; i++) {
+                    let x = width - keypoints[i].x;
+                    let y = keypoints[i].y;
+                    ellipse(x, y, 7, 7);
+                }
+            }
+        }
+
+        // 辨識手勢：石頭、剪刀、布
+        function classifyGesture() {
+            if (predictions.length > 0) {
+                let keypoints = predictions[0].keypoints;
+
+                // 簡化判斷：檢查指尖是否高於（Y值較小）手指的第二個關節
+                const isIndexExtended = keypoints[8].y < keypoints[6].y;
+                const isMiddleExtended = keypoints[12].y < keypoints[10].y;
+                const isRingExtended = keypoints[16].y < keypoints[14].y;
+                const isPinkyExtended = keypoints[20].y < keypoints[18].y;
+                
+                // 判斷「布」：四根手指伸直（為求穩定，暫不考慮大拇指）
+                if (isIndexExtended && isMiddleExtended && isRingExtended && isPinkyExtended) {
+                    detectedGesture = "布 ✋";
+                    return;
+                }
+
+                // 判斷「剪刀」：食指和中指伸直，其他兩指彎曲
+                if (isIndexExtended && isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+                    detectedGesture = "剪刀 ✌️";
+                    return;
+                }
+
+                // 判斷「石頭」：所有手指都彎曲
+                if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+                    detectedGesture = "石頭 ✊";
+                    return;
+                }
+
+                // 如果以上都不是，則為辨識中
+                detectedGesture = "辨識中...";
+
+            } else {
+                detectedGesture = "請將手放入畫面";
+            }
+        }
+
+        // 繪製辨識結果文字
+        function drawTextUI() {
+            textAlign(CENTER, CENTER);
+            textStyle(BOLD);
+            textSize(32);
+            fill(0, 0, 0, 150); // 陰影
+            text(detectedGesture, width / 2 + 2, height / 2 + 2);
+            fill(255, 174, 0); // 金黃色
+            text(detectedGesture, width / 2, height / 2);
+        }
+    </script>
+</body>
+</html>
